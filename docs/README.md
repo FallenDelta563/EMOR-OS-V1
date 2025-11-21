@@ -1,0 +1,10 @@
+# EMOR OS Documentation Index
+
+Core docs inside this folder:
+- ARCHITECTURE.md
+- NOTES_SYSTEM_DOCUMENTATION.md
+- QUICK_REFERENCE.md
+- CHANGES_SUMMARY.md
+- IMPLEMENTATION_CHECKLIST.md
+- ROADMAP.md
+- VERSIONING.md
