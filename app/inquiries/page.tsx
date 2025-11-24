@@ -41,11 +41,17 @@ export default function InquiriesPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<"focus" | "grid">("focus");
-  const [currentTab, setCurrentTab] = useState<"leads" | "settings">("leads");
+  const [currentTab, setCurrentTab] = useState<"leads" | "deleted">("leads");
   const [noteText, setNoteText] = useState("");
   const [showNoteField, setShowNoteField] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [leadStatuses, setLeadStatuses] = useState<Record<string, string>>({});
+
+  // Multi-select state
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
+  const [selectedDeletedIds, setSelectedDeletedIds] = useState<Set<string>>(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  const [showBulkPermanentDeleteConfirm, setShowBulkPermanentDeleteConfirm] = useState(false);
 
   // Note editing state
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -237,14 +243,13 @@ export default function InquiriesPage() {
             phone: form.phone || "",
             type,
             score: Math.min(100, score),
-            status: "new" as Lead["status"],
+            status: "new",
             notes: [],
             formData: form,
             created_at: item.created_at,
             emailLogs: [],
           };
         });
-
         setDeletedLeads(processed);
       }
     } catch (err) {
@@ -252,46 +257,21 @@ export default function InquiriesPage() {
     }
   };
 
-  const getTimeAgo = (date: string) => {
-    const diff = Date.now() - new Date(date).getTime();
-    const hours = Math.floor(diff / 3600000);
-    const days = Math.floor(diff / 86400000);
+  const updateLeadStatus = (leadId: string, newStatus: Lead["status"]) => {
+    const updated = { ...leadStatuses, [leadId]: newStatus };
+    setLeadStatuses(updated);
+    localStorage.setItem("lead-statuses", JSON.stringify(updated));
 
-    if (hours < 24) return `${hours}h ago`;
-    return `${days}d ago`;
-  };
-
-  const updateLeadStatus = (leadId: string, newStatus: string) => {
     setLeads((prev) =>
-      prev.map((lead) =>
-        lead.id === leadId
-          ? { ...lead, status: newStatus as Lead["status"] }
-          : lead
-      )
+      prev.map((l) => (l.id === leadId ? { ...l, status: newStatus } : l))
     );
-
-    setSelectedLead((prev) =>
-      prev && prev.id === leadId
-        ? ({ ...prev, status: newStatus } as Lead)
-        : prev
-    );
-
-    const updatedStatuses = { ...leadStatuses, [leadId]: newStatus };
-    setLeadStatuses(updatedStatuses);
-    localStorage.setItem("lead-statuses", JSON.stringify(updatedStatuses));
-
-    const statusElement = document.getElementById(`status-saved-${leadId}`);
-    if (statusElement) {
-      statusElement.classList.remove("opacity-0");
-      setTimeout(() => {
-        statusElement.classList.add("opacity-0");
-      }, 2000);
+    if (selectedLead?.id === leadId) {
+      setSelectedLead((prev) => (prev ? { ...prev, status: newStatus } : null));
     }
   };
 
   const deleteLead = async () => {
     if (!selectedLead) return;
-
     try {
       const { error } = await supabaseBrowser
         .from("inquiries")
@@ -300,15 +280,37 @@ export default function InquiriesPage() {
 
       if (error) throw error;
 
+      setLeads((prev) => prev.filter((l) => l.id !== selectedLead.id));
+      setSelectedLead(null);
       setShowDeleteConfirm(false);
-      await fetchLeads();
-      await fetchDeletedLeads();
     } catch (err) {
       console.error("Error deleting lead:", err);
     }
   };
 
-  const recoverLead = async (leadId: string) => {
+  const bulkDeleteLeads = async () => {
+    if (selectedLeadIds.size === 0) return;
+    try {
+      const idsArray = Array.from(selectedLeadIds);
+      const { error } = await supabaseBrowser
+        .from("inquiries")
+        .update({ is_deleted: true })
+        .in("id", idsArray);
+
+      if (error) throw error;
+
+      setLeads((prev) => prev.filter((l) => !selectedLeadIds.has(l.id)));
+      setSelectedLeadIds(new Set());
+      setShowBulkDeleteConfirm(false);
+      if (selectedLead && selectedLeadIds.has(selectedLead.id)) {
+        setSelectedLead(null);
+      }
+    } catch (err) {
+      console.error("Error bulk deleting leads:", err);
+    }
+  };
+
+  const restoreLead = async (leadId: string) => {
     try {
       const { error } = await supabaseBrowser
         .from("inquiries")
@@ -316,43 +318,45 @@ export default function InquiriesPage() {
         .eq("id", leadId);
 
       if (error) throw error;
-
-      await fetchLeads();
-      await fetchDeletedLeads();
     } catch (err) {
-      console.error("Error recovering lead:", err);
+      console.error("Error restoring lead:", err);
     }
   };
 
   const permanentlyDeleteLead = async (leadId: string) => {
-    if (!confirm("Are you sure? This will permanently delete this lead and cannot be undone.")) {
-      return;
-    }
-
     try {
-      // Delete notes first
-      await supabaseBrowser.from("lead_notes").delete().eq("lead_id", leadId);
-      
-      // Delete email logs
-      await supabaseBrowser.from("email_logs").delete().eq("inquiry_id", leadId);
-      
-      // Delete the lead
       const { error } = await supabaseBrowser
         .from("inquiries")
         .delete()
         .eq("id", leadId);
 
       if (error) throw error;
-
-      await fetchDeletedLeads();
     } catch (err) {
       console.error("Error permanently deleting lead:", err);
     }
   };
 
+  const bulkPermanentlyDeleteLeads = async () => {
+    if (selectedDeletedIds.size === 0) return;
+    try {
+      const idsArray = Array.from(selectedDeletedIds);
+      const { error } = await supabaseBrowser
+        .from("inquiries")
+        .delete()
+        .in("id", idsArray);
+
+      if (error) throw error;
+
+      setDeletedLeads((prev) => prev.filter((l) => !selectedDeletedIds.has(l.id)));
+      setSelectedDeletedIds(new Set());
+      setShowBulkPermanentDeleteConfirm(false);
+    } catch (err) {
+      console.error("Error bulk permanently deleting leads:", err);
+    }
+  };
+
   const addNote = async () => {
     if (!selectedLead || !noteText.trim()) return;
-
     try {
       const { data, error } = await supabaseBrowser
         .from("lead_notes")
@@ -367,12 +371,12 @@ export default function InquiriesPage() {
 
       const newNote: Note = {
         id: data.id,
-        lead_id: selectedLead.id,
+        lead_id: data.lead_id,
         note: data.note,
         created_at: data.created_at,
       };
 
-      const updatedLead: Lead = {
+      const updatedLead = {
         ...selectedLead,
         notes: [...selectedLead.notes, newNote],
       };
@@ -381,7 +385,6 @@ export default function InquiriesPage() {
       setLeads((prev) =>
         prev.map((l) => (l.id === selectedLead.id ? updatedLead : l))
       );
-
       setNoteText("");
       setShowNoteField(false);
     } catch (err) {
@@ -389,26 +392,55 @@ export default function InquiriesPage() {
     }
   };
 
-  const updateNote = async (noteId: string, newText: string) => {
-    if (!selectedLead || !newText.trim()) return;
-
+  const deleteNote = async (noteId: string) => {
+    if (!selectedLead) return;
     try {
       const { error } = await supabaseBrowser
         .from("lead_notes")
-        .update({ note: newText.trim() })
+        .delete()
         .eq("id", noteId);
 
       if (error) throw error;
 
-      const updatedNotes = selectedLead.notes.map((n) =>
-        n.id === noteId ? { ...n, note: newText.trim() } : n
-      );
-
-      const updatedLead: Lead = {
+      const updatedLead = {
         ...selectedLead,
-        notes: updatedNotes,
+        notes: selectedLead.notes.filter((n) => n.id !== noteId),
       };
 
+      setSelectedLead(updatedLead);
+      setLeads((prev) =>
+        prev.map((l) => (l.id === selectedLead.id ? updatedLead : l))
+      );
+    } catch (err) {
+      console.error("Error deleting note:", err);
+    }
+  };
+
+  const startEditingNote = (note: Note) => {
+    setEditingNoteId(note.id);
+    setEditingNoteText(note.note);
+  };
+
+  const cancelEditingNote = () => {
+    setEditingNoteId(null);
+    setEditingNoteText("");
+  };
+
+  const saveEditedNote = async () => {
+    if (!selectedLead || !editingNoteId || !editingNoteText.trim()) return;
+    try {
+      const { error } = await supabaseBrowser
+        .from("lead_notes")
+        .update({ note: editingNoteText.trim() })
+        .eq("id", editingNoteId);
+
+      if (error) throw error;
+
+      const updatedNotes = selectedLead.notes.map((n) =>
+        n.id === editingNoteId ? { ...n, note: editingNoteText.trim() } : n
+      );
+
+      const updatedLead = { ...selectedLead, notes: updatedNotes };
       setSelectedLead(updatedLead);
       setLeads((prev) =>
         prev.map((l) => (l.id === selectedLead.id ? updatedLead : l))
@@ -421,809 +453,964 @@ export default function InquiriesPage() {
     }
   };
 
-  const deleteNote = async (noteId: string) => {
-    if (!selectedLead) return;
-    if (!confirm("Delete this note?")) return;
-
-    try {
-      const { error } = await supabaseBrowser
-        .from("lead_notes")
-        .delete()
-        .eq("id", noteId);
-
-      if (error) throw error;
-
-      const updatedNotes = selectedLead.notes.filter((n) => n.id !== noteId);
-
-      const updatedLead: Lead = {
-        ...selectedLead,
-        notes: updatedNotes,
-      };
-
-      setSelectedLead(updatedLead);
-      setLeads((prev) =>
-        prev.map((l) => (l.id === selectedLead.id ? updatedLead : l))
-      );
-    } catch (err) {
-      console.error("Error deleting note:", err);
-    }
-  };
-
   const viewEmailContent = async (emailLog: EmailLog) => {
     setViewingEmail(emailLog);
     setLoadingEmailContent(true);
-    
     try {
-      // Try to fetch the full email content from your email logs table
-      const { data, error } = await supabaseBrowser
-        .from("email_logs")
-        .select("*")
-        .eq("id", emailLog.id)
-        .single();
-
-      if (error) {
-        console.error("Error fetching email:", error);
-      }
-
-      // Check for various possible field names where content might be stored
-      const content = data?.html_body || 
-                     data?.body || 
-                     data?.message || 
-                     data?.content ||
-                     data?.text_body ||
-                     data?.html;
-
-      if (content) {
-        // If we have HTML content, use it; otherwise wrap plain text in paragraph
-        if (content.includes('<') || content.includes('&lt;')) {
-          setEmailContent(content);
-        } else {
-          setEmailContent(`<div style="white-space: pre-wrap; font-family: system-ui;">${content}</div>`);
-        }
+      const res = await fetch(
+        `/api/get-email-content?emailId=${emailLog.id}`
+      );
+      if (res.ok) {
+        const json = await res.json();
+        setEmailContent(json.content || "No content available.");
       } else {
-        // If no body content, show what we have from the log
-        setEmailContent(`
-          <div style="padding: 20px; background: #f9fafb; border-radius: 8px; border: 2px solid #e5e7eb;">
-            <h3 style="margin-top: 0; color: #1f2937;">Email Details</h3>
-            <p><strong>Subject:</strong> ${emailLog.subject || 'No subject'}</p>
-            <p><strong>${emailLog.direction === 'outbound' ? 'To' : 'From'}:</strong> ${emailLog.direction === 'outbound' ? emailLog.to_email : emailLog.from_email}</p>
-            <p><strong>Status:</strong> ${emailLog.status || 'Unknown'}</p>
-            <p><strong>Sent:</strong> ${emailLog.sent_at ? new Date(emailLog.sent_at).toLocaleString() : 'Unknown'}</p>
-            <div style="margin-top: 20px; padding: 15px; background: white; border-left: 4px solid #3b82f6;">
-              <p style="margin: 0; color: #6b7280;">
-                <strong>Note:</strong> Full email content is not stored in the database. Only metadata is available.
-              </p>
-            </div>
-          </div>
-        `);
+        setEmailContent("Failed to load email content.");
       }
     } catch (err) {
-      console.error("Error loading email:", err);
-      setEmailContent(`
-        <div style="padding: 20px; text-align: center; color: #ef4444;">
-          <p>Unable to load email content</p>
-          <p style="font-size: 14px; color: #9ca3af;">There was an error retrieving this email.</p>
-        </div>
-      `);
+      console.error("Error fetching email content:", err);
+      setEmailContent("Error loading email content.");
     } finally {
       setLoadingEmailContent(false);
     }
   };
 
-  const getTypeColor = (type: Lead["type"]) => {
-    switch (type) {
-      case "Partnership":
-        return "bg-purple-100 text-purple-700 border-purple-200";
-      case "Consultation":
-        return "bg-blue-100 text-blue-700 border-blue-200";
-      case "Newsletter":
-        return "bg-gray-100 text-gray-700 border-gray-200";
+  const toggleLeadSelection = (leadId: string) => {
+    setSelectedLeadIds((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(leadId)) {
+        newSet.delete(leadId);
+      } else {
+        newSet.add(leadId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleDeletedSelection = (leadId: string) => {
+    setSelectedDeletedIds((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(leadId)) {
+        newSet.delete(leadId);
+      } else {
+        newSet.add(leadId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleSelectAllLeads = () => {
+    if (selectedLeadIds.size === leads.length) {
+      setSelectedLeadIds(new Set());
+    } else {
+      setSelectedLeadIds(new Set(leads.map((l) => l.id)));
     }
   };
 
-  const getStatusColor = (status: Lead["status"]) => {
-    switch (status) {
-      case "new":
-        return "bg-green-100 text-green-700 border-green-200";
-      case "contacted":
-        return "bg-blue-100 text-blue-700 border-blue-200";
-      case "qualified":
-        return "bg-purple-100 text-purple-700 border-purple-200";
-      case "converted":
-        return "bg-emerald-100 text-emerald-700 border-emerald-200";
+  const toggleSelectAllDeleted = () => {
+    if (selectedDeletedIds.size === deletedLeads.length) {
+      setSelectedDeletedIds(new Set());
+    } else {
+      setSelectedDeletedIds(new Set(deletedLeads.map((l) => l.id)));
     }
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-400">Loading...</div>
+      <div className="h-screen flex items-center justify-center bg-linear-to-br from-blue-50 via-white to-purple-50">
+        <div className="text-center">
+          <div className="inline-block w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+          <p className="text-gray-600 font-medium text-lg">Loading inquiries...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header with Tab Navigation */}
-      <div className="bg-white border-b-2 border-gray-200 sticky top-0 z-40">
-        <div className="max-w-[1800px] mx-auto px-8 py-6">
-          <div className="flex items-center justify-between mb-4">
-            <h1 className="text-3xl font-bold text-gray-900">Company OS</h1>
-            <div className="flex items-center gap-3">
-              <div className="px-4 py-2 bg-gray-100 rounded-lg">
-                <span className="text-sm font-semibold text-gray-600">
-                  {leads.length} Active Lead{leads.length !== 1 ? "s" : ""}
-                </span>
-              </div>
+    <div className="h-screen flex flex-col bg-linear-to-br from-gray-50 via-white to-blue-50">
+      {/* Modern Header with Tabs */}
+      <div className="bg-white/80 backdrop-blur-sm border-b border-gray-200/50 shadow-sm shrink-0">
+        <div className="px-8 py-6">
+          {/* Title Section */}
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h1 className="text-3xl font-bold bg-linear-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent">
+                Inquiries
+              </h1>
+              <p className="text-gray-500 mt-1">
+                Manage and track your leads
+              </p>
             </div>
+
+            {/* View Mode Toggle (only in leads tab) */}
+            {currentTab === "leads" && (
+              <div className="flex items-center gap-2 bg-gray-100 rounded-xl p-1.5">
+                <button
+                  onClick={() => setViewMode("focus")}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    viewMode === "focus"
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-600 hover:text-gray-900"
+                  }`}
+                  title="Focus View"
+                >
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                    </svg>
+                    <span>Focus</span>
+                  </div>
+                </button>
+                <button
+                  onClick={() => setViewMode("grid")}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    viewMode === "grid"
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-600 hover:text-gray-900"
+                  }`}
+                  title="Grid View"
+                >
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                    </svg>
+                    <span>Grid</span>
+                  </div>
+                </button>
+              </div>
+            )}
           </div>
-          
-          {/* Tab Navigation */}
-          <div className="flex gap-2">
+
+          {/* Modern Tab Navigation */}
+          <div className="flex items-center gap-2 bg-gray-100/80 rounded-xl p-1.5 w-fit">
             <button
-              onClick={() => setCurrentTab("leads")}
-              className={`px-6 py-3 rounded-lg font-semibold transition-all ${
+              onClick={() => {
+                setCurrentTab("leads");
+                setSelectedLeadIds(new Set());
+              }}
+              className={`px-6 py-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${
                 currentTab === "leads"
-                  ? "bg-blue-600 text-white shadow-lg"
-                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  ? "bg-white text-blue-600 shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-white/50"
               }`}
             >
-              📋 Leads
+              <div className="flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                  currentTab === "leads" ? "bg-blue-100" : "bg-gray-200"
+                }`}>
+                  <span className="text-lg">📬</span>
+                </div>
+                <div className="text-left">
+                  <div className="flex items-center gap-2">
+                    <span>Active Leads</span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                      currentTab === "leads" 
+                        ? "bg-blue-100 text-blue-700" 
+                        : "bg-gray-200 text-gray-600"
+                    }`}>
+                      {leads.length}
+                    </span>
+                  </div>
+                </div>
+              </div>
             </button>
+
             <button
-              onClick={() => setCurrentTab("settings")}
-              className={`px-6 py-3 rounded-lg font-semibold transition-all ${
-                currentTab === "settings"
-                  ? "bg-blue-600 text-white shadow-lg"
-                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              onClick={() => {
+                setCurrentTab("deleted");
+                setSelectedDeletedIds(new Set());
+              }}
+              className={`px-6 py-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${
+                currentTab === "deleted"
+                  ? "bg-white text-purple-600 shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-white/50"
               }`}
             >
-              ⚙️ Settings
+              <div className="flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                  currentTab === "deleted" ? "bg-purple-100" : "bg-gray-200"
+                }`}>
+                  <span className="text-lg">♻️</span>
+                </div>
+                <div className="text-left">
+                  <div className="flex items-center gap-2">
+                    <span>Deleted Leads</span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                      currentTab === "deleted" 
+                        ? "bg-purple-100 text-purple-700" 
+                        : "bg-gray-200 text-gray-600"
+                    }`}>
+                      {deletedLeads.length}
+                    </span>
+                  </div>
+                </div>
+              </div>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="max-w-[1800px] mx-auto p-8">
-        {currentTab === "leads" ? (
-          // LEADS TAB
-          <>
-            {leads.length === 0 ? (
-              <div className="text-center py-20">
-                <div className="text-6xl mb-4">📭</div>
-                <h2 className="text-2xl font-bold text-gray-400 mb-2">
-                  No leads yet
-                </h2>
-                <p className="text-gray-400">
-                  New submissions will appear here
-                </p>
-              </div>
-            ) : (
-              <>
-                {/* View Mode Toggle */}
-                <div className="mb-6 flex gap-2">
-                  <button
-                    onClick={() => setViewMode("focus")}
-                    className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                      viewMode === "focus"
-                        ? "bg-gray-900 text-white"
-                        : "bg-white text-gray-600 hover:bg-gray-100"
-                    }`}
-                  >
-                    Focus Mode
-                  </button>
-                  <button
-                    onClick={() => setViewMode("grid")}
-                    className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                      viewMode === "grid"
-                        ? "bg-gray-900 text-white"
-                        : "bg-white text-gray-600 hover:bg-gray-100"
-                    }`}
-                  >
-                    Grid View
-                  </button>
+      {/* Main Content */}
+      {currentTab === "leads" ? (
+        viewMode === "focus" ? (
+          <div className="flex-1 flex overflow-hidden">
+            {/* Leads List - Left Sidebar */}
+            <div className="w-96 bg-white/90 backdrop-blur-sm border-r border-gray-200/50 flex flex-col shadow-lg">
+              {/* Multi-select controls */}
+              {leads.length > 0 && (
+                <div className="px-6 py-4 border-b border-gray-200/50 bg-linear-to-r from-gray-50 to-white">
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={selectedLeadIds.size === leads.length && leads.length > 0}
+                        onChange={toggleSelectAllLeads}
+                        className="w-5 h-5 rounded-lg border-2 border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all cursor-pointer"
+                      />
+                      <span className="text-sm font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
+                        {selectedLeadIds.size > 0
+                          ? `${selectedLeadIds.size} selected`
+                          : "Select all"}
+                      </span>
+                    </label>
+                    {selectedLeadIds.size > 0 && (
+                      <button
+                        onClick={() => setShowBulkDeleteConfirm(true)}
+                        className="px-4 py-2 text-sm text-white bg-linear-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 rounded-lg font-medium shadow-sm hover:shadow transition-all"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
                 </div>
+              )}
 
-                {viewMode === "grid" ? (
-                  // GRID VIEW
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="flex-1 overflow-y-auto">
+                {leads.length === 0 ? (
+                  <div className="p-12 text-center">
+                    <div className="w-24 h-24 mx-auto mb-6 bg-linear-to-br from-blue-100 to-purple-100 rounded-3xl flex items-center justify-center">
+                      <span className="text-5xl">📭</span>
+                    </div>
+                    <h3 className="font-bold text-gray-900 mb-2 text-lg">
+                      No inquiries yet
+                    </h3>
+                    <p className="text-sm text-gray-500 max-w-xs mx-auto">
+                      When someone submits a form, it will appear here.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-gray-100">
                     {leads.map((lead) => (
                       <div
                         key={lead.id}
                         onClick={() => {
-                          setSelectedLead(lead);
-                          setViewMode("focus");
+                          if (!selectedLeadIds.has(lead.id)) {
+                            setSelectedLead(lead);
+                          }
                         }}
-                        className="bg-white rounded-xl border-2 border-gray-200 p-6 hover:border-blue-500 hover:shadow-xl transition-all cursor-pointer"
+                        className={`p-5 cursor-pointer transition-all duration-200 ${
+                          selectedLead?.id === lead.id
+                            ? "bg-linear-to-r from-blue-50 to-purple-50 border-l-4 border-blue-600"
+                            : "hover:bg-gray-50 border-l-4 border-transparent"
+                        }`}
                       >
-                        <div className="flex items-start justify-between mb-4">
-                          <div className="flex-1">
-                            <h3 className="text-xl font-bold text-gray-900 mb-1">
-                              {lead.name}
-                            </h3>
-                            <p className="text-sm text-gray-500">
+                        <div className="flex items-start gap-4">
+                          <input
+                            type="checkbox"
+                            checked={selectedLeadIds.has(lead.id)}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              toggleLeadSelection(lead.id);
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="mt-1 w-5 h-5 rounded-lg border-2 border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between mb-2">
+                              <h3 className="font-bold text-gray-900 truncate text-lg">
+                                {lead.name}
+                              </h3>
+                              <span
+                                className={`ml-2 px-3 py-1 text-xs font-bold rounded-full shrink-0 ${
+                                  lead.type === "Partnership"
+                                    ? "bg-linear-to-r from-purple-500 to-pink-500 text-white"
+                                    : lead.type === "Consultation"
+                                    ? "bg-linear-to-r from-blue-500 to-cyan-500 text-white"
+                                    : "bg-linear-to-r from-green-500 to-emerald-500 text-white"
+                                }`}
+                              >
+                                {lead.type}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-600 truncate mb-2">
                               {lead.email}
                             </p>
+                            {lead.company && (
+                              <p className="text-xs text-gray-500 truncate mb-3">
+                                {lead.company}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`px-3 py-1 text-xs font-semibold rounded-full ${
+                                  lead.status === "new"
+                                    ? "bg-gray-100 text-gray-700"
+                                    : lead.status === "contacted"
+                                    ? "bg-blue-100 text-blue-700"
+                                    : lead.status === "qualified"
+                                    ? "bg-yellow-100 text-yellow-700"
+                                    : "bg-green-100 text-green-700"
+                                }`}
+                              >
+                                {lead.status}
+                              </span>
+                              <span className="text-xs text-gray-500 font-medium">
+                                Score: {lead.score}
+                              </span>
+                            </div>
                           </div>
-                          <div
-                            className={`px-3 py-1 rounded-full text-xs font-bold border-2 ${getTypeColor(
-                              lead.type
-                            )}`}
-                          >
-                            {lead.type}
-                          </div>
-                        </div>
-
-                        {lead.company && (
-                          <div className="mb-3 text-sm text-gray-600">
-                            🏢 {lead.company}
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-gray-500">
-                            {getTimeAgo(lead.created_at)}
-                          </span>
-                          <span className="text-sm font-bold text-blue-600">
-                            Score: {lead.score}
-                          </span>
                         </div>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  // FOCUS MODE
-                  <div className="grid grid-cols-12 gap-8">
-                    {/* Left Sidebar - Lead List */}
-                    <div className="col-span-3 space-y-3">
-                      {leads.map((lead) => (
-                        <div
-                          key={lead.id}
-                          onClick={() => setSelectedLead(lead)}
-                          className={`p-5 rounded-xl border-2 cursor-pointer transition-all ${
-                            selectedLead?.id === lead.id
-                              ? "bg-blue-50 border-blue-500 shadow-lg"
-                              : "bg-white border-gray-200 hover:border-gray-300 hover:shadow-md"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex-1 min-w-0">
-                              <h3 className="font-bold text-gray-900 truncate">
-                                {lead.name}
-                              </h3>
-                              <p className="text-xs text-gray-500 truncate">
-                                {lead.email}
-                              </p>
-                            </div>
-                            <div
-                              className={`ml-2 px-2 py-0.5 rounded text-xs font-bold border ${getTypeColor(
-                                lead.type
-                              )}`}
-                            >
-                              {lead.type.slice(0, 4)}
-                            </div>
+                )}
+              </div>
+            </div>
+
+            {/* Lead Details - Right Panel */}
+            <div className="flex-1 overflow-y-auto bg-linear-to-br from-gray-50 via-white to-purple-50">
+              {selectedLead ? (
+                <div className="max-w-5xl mx-auto p-8">
+                  {/* Header Card */}
+                  <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 p-8 mb-6">
+                    <div className="flex items-start justify-between mb-6">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-4 mb-4">
+                          <div className="w-16 h-16 bg-linear-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center text-white font-bold text-2xl shadow-lg">
+                            {selectedLead.name.charAt(0).toUpperCase()}
                           </div>
-
-                          <div className="flex items-center justify-between mt-3">
-                            <span className="text-xs text-gray-400">
-                              {getTimeAgo(lead.created_at)}
-                            </span>
-                            <span className="text-xs font-bold text-blue-600">
-                              {lead.score}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Main Content Area */}
-                    {selectedLead && (
-                      <div className="col-span-9 bg-white rounded-xl border-2 border-gray-200 p-8">
-                        <div className="space-y-8">
-                          {/* Header Section */}
-                          <div className="flex items-start justify-between pb-6 border-b-2 border-gray-200">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-3 mb-3">
-                                <h2 className="text-3xl font-bold text-gray-900">
-                                  {selectedLead.name}
-                                </h2>
-                                <div
-                                  className={`px-3 py-1 rounded-full text-xs font-bold border-2 ${getTypeColor(
-                                    selectedLead.type
-                                  )}`}
-                                >
-                                  {selectedLead.type}
-                                </div>
-                              </div>
-
-                              <div className="space-y-2">
-                                <p className="text-gray-600">
-                                  📧 {selectedLead.email}
-                                </p>
-                                {selectedLead.company && (
-                                  <p className="text-gray-600">
-                                    🏢 {selectedLead.company}
-                                  </p>
-                                )}
-                                {selectedLead.phone && (
-                                  <p className="text-gray-600">
-                                    📱 {selectedLead.phone}
-                                  </p>
-                                )}
-                                <p className="text-sm text-gray-400">
-                                  Submitted {getTimeAgo(selectedLead.created_at)}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-col items-end gap-3">
-                              <div className="px-6 py-3 bg-blue-600 text-white rounded-xl text-2xl font-bold">
-                                Score: {selectedLead.score}
-                              </div>
-
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => setIsEmailModalOpen(true)}
-                                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all"
-                                >
-                                  📧 Email
-                                </button>
-                                <button
-                                  onClick={() => setShowDeleteConfirm(true)}
-                                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-all"
-                                >
-                                  🗑️ Delete
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Status Section */}
                           <div>
-                            <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-4">
-                              Status
-                            </h3>
+                            <h2 className="text-3xl font-bold text-gray-900 mb-2">
+                              {selectedLead.name}
+                            </h2>
                             <div className="flex items-center gap-3">
-                              <select
-                                value={selectedLead.status}
-                                onChange={(e) =>
-                                  updateLeadStatus(
-                                    selectedLead.id,
-                                    e.target.value
-                                  )
-                                }
-                                className={`px-4 py-2 rounded-lg font-semibold border-2 cursor-pointer transition-all ${getStatusColor(
-                                  selectedLead.status
-                                )}`}
-                              >
-                                <option value="new">New</option>
-                                <option value="contacted">Contacted</option>
-                                <option value="qualified">Qualified</option>
-                                <option value="converted">Converted</option>
-                              </select>
                               <span
-                                id={`status-saved-${selectedLead.id}`}
-                                className="text-sm text-green-600 font-medium opacity-0 transition-opacity"
+                                className={`px-4 py-1.5 text-sm font-bold rounded-full ${
+                                  selectedLead.type === "Partnership"
+                                    ? "bg-linear-to-r from-purple-500 to-pink-500 text-white"
+                                    : selectedLead.type === "Consultation"
+                                    ? "bg-linear-to-r from-blue-500 to-cyan-500 text-white"
+                                    : "bg-linear-to-r from-green-500 to-emerald-500 text-white"
+                                }`}
                               >
-                                ✓ Saved
+                                {selectedLead.type}
+                              </span>
+                              <span className="px-4 py-1.5 text-sm font-bold bg-linear-to-r from-gray-100 to-gray-200 text-gray-700 rounded-full">
+                                Score: {selectedLead.score}
                               </span>
                             </div>
                           </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setShowDeleteConfirm(true)}
+                        className="p-3 text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                        title="Delete Lead"
+                      >
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
 
-                          {/* Notes & Email History Section */}
-                          <div className="space-y-6">
-                            {/* Notes */}
-                            {(selectedLead.notes.length > 0 ||
-                              showNoteField) && (
-                              <div>
-                                <div className="flex items-center justify-between mb-4">
-                                  <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wider">
-                                    Notes ({selectedLead.notes.length})
-                                  </h3>
-                                  {!showNoteField && (
-                                    <button
-                                      onClick={() => setShowNoteField(true)}
-                                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg font-medium transition-all shadow-sm"
-                                    >
-                                      + Add Note
-                                    </button>
+                    {/* Contact Info Grid */}
+                    <div className="grid grid-cols-2 gap-6 mb-6">
+                      <div className="bg-linear-to-br from-blue-50 to-cyan-50 rounded-xl p-4">
+                        <p className="text-sm text-gray-600 mb-1 font-medium">Email</p>
+                        <p className="text-gray-900 font-semibold">{selectedLead.email}</p>
+                      </div>
+                      {selectedLead.phone && (
+                        <div className="bg-linear-to-br from-purple-50 to-pink-50 rounded-xl p-4">
+                          <p className="text-sm text-gray-600 mb-1 font-medium">Phone</p>
+                          <p className="text-gray-900 font-semibold">{selectedLead.phone}</p>
+                        </div>
+                      )}
+                      {selectedLead.company && (
+                        <div className="bg-linear-to-br from-green-50 to-emerald-50 rounded-xl p-4">
+                          <p className="text-sm text-gray-600 mb-1 font-medium">Company</p>
+                          <p className="text-gray-900 font-semibold">{selectedLead.company}</p>
+                        </div>
+                      )}
+                      <div className="bg-linear-to-br from-orange-50 to-amber-50 rounded-xl p-4">
+                        <p className="text-sm text-gray-600 mb-1 font-medium">Submitted</p>
+                        <p className="text-gray-900 font-semibold">
+                          {new Date(selectedLead.created_at).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric'
+                          })}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Status Selector */}
+                    <div className="mb-6">
+                      <p className="text-sm text-gray-600 mb-3 font-medium">Lead Status</p>
+                      <div className="flex gap-3">
+                        {(["new", "contacted", "qualified", "converted"] as const).map((status) => (
+                          <button
+                            key={status}
+                            onClick={() => updateLeadStatus(selectedLead.id, status)}
+                            className={`flex-1 px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200 ${
+                              selectedLead.status === status
+                                ? status === "new"
+                                  ? "bg-linear-to-r from-gray-700 to-gray-600 text-white shadow-lg"
+                                  : status === "contacted"
+                                  ? "bg-linear-to-r from-blue-600 to-blue-500 text-white shadow-lg"
+                                  : status === "qualified"
+                                  ? "bg-linear-to-r from-yellow-500 to-orange-500 text-white shadow-lg"
+                                  : "bg-linear-to-r from-green-600 to-emerald-600 text-white shadow-lg"
+                                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                            }`}
+                          >
+                            {status.charAt(0).toUpperCase() + status.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Email Button */}
+                    <button
+                      onClick={() => setIsEmailModalOpen(true)}
+                      className="w-full py-4 bg-linear-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white rounded-xl font-semibold transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-3"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                      Send Email
+                    </button>
+                  </div>
+
+                  {/* Form Data */}
+                  {selectedLead.formData && Object.keys(selectedLead.formData).length > 0 && (
+                    <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 p-8 mb-6">
+                      <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-2">
+                        <span>📋</span>
+                        Form Details
+                      </h3>
+                      <div className="grid grid-cols-2 gap-6">
+                        {Object.entries(selectedLead.formData).map(([key, value]) => (
+                          <div key={key} className="bg-linear-to-br from-gray-50 to-blue-50 rounded-xl p-4">
+                            <p className="text-sm text-gray-600 mb-1 font-medium">
+                              {key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, " ")}
+                            </p>
+                            <p className="text-gray-900 font-semibold">
+                              {String(value || "—")}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Email History */}
+                  {selectedLead.emailLogs && selectedLead.emailLogs.length > 0 && (
+                    <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 p-8 mb-6">
+                      <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-2">
+                        <span>📧</span>
+                        Email History
+                      </h3>
+                      <div className="space-y-4">
+                        {selectedLead.emailLogs.map((log) => (
+                          <div
+                            key={log.id}
+                            onClick={() => viewEmailContent(log)}
+                            className="p-5 border-2 border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all cursor-pointer group"
+                          >
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <span className="text-2xl">
+                                    {log.direction === "outbound" ? "📤" : "📥"}
+                                  </span>
+                                  <span className="font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
+                                    {log.subject || "(no subject)"}
+                                  </span>
+                                  {log.status && (
+                                    <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold">
+                                      {log.status}
+                                    </span>
                                   )}
                                 </div>
-
-                                <div className="space-y-3">
-                                    {selectedLead.notes.map((note) => (
-                                      <div
-                                        key={note.id}
-                                        className="group p-5 bg-white rounded-xl border-2 border-gray-200 hover:border-gray-300 transition-all"
-                                      >
-                                        {editingNoteId === note.id ? (
-                                          // EDITING MODE
-                                          <div className="space-y-3">
-                                            <textarea
-                                              value={editingNoteText}
-                                              onChange={(e) =>
-                                                setEditingNoteText(
-                                                  e.target.value
-                                                )
-                                              }
-                                              className="w-full px-4 py-3 border-2 border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                                              rows={3}
-                                              autoFocus
-                                            />
-                                            <div className="flex gap-2">
-                                              <button
-                                                onClick={() =>
-                                                  updateNote(
-                                                    note.id,
-                                                    editingNoteText
-                                                  )
-                                                }
-                                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg font-medium transition-all"
-                                              >
-                                                ✓ Save
-                                              </button>
-                                              <button
-                                                onClick={() => {
-                                                  setEditingNoteId(null);
-                                                  setEditingNoteText("");
-                                                }}
-                                                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm rounded-lg font-medium transition-all"
-                                              >
-                                                Cancel
-                                              </button>
-                                            </div>
-                                          </div>
-                                        ) : (
-                                          // VIEW MODE
-                                          <>
-                                            <div className="flex items-start justify-between gap-3 mb-3">
-                                              <p className="text-gray-900 flex-1 leading-relaxed">
-                                                {note.note}
-                                              </p>
-                                              <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <button
-                                                  onClick={() => {
-                                                    setEditingNoteId(note.id);
-                                                    setEditingNoteText(
-                                                      note.note
-                                                    );
-                                                  }}
-                                                  className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium transition-all"
-                                                  title="Edit note"
-                                                >
-                                                  Edit
-                                                </button>
-                                                <button
-                                                  onClick={() =>
-                                                    deleteNote(note.id)
-                                                  }
-                                                  className="px-3 py-1.5 text-xs bg-red-50 hover:bg-red-100 text-red-600 rounded-lg font-medium transition-all"
-                                                  title="Delete note"
-                                                >
-                                                  Delete
-                                                </button>
-                                              </div>
-                                            </div>
-                                            <p className="text-xs text-gray-400 font-medium">
-                                              {new Date(
-                                                note.created_at
-                                              ).toLocaleString()}
-                                            </p>
-                                          </>
-                                        )}
-                                      </div>
-                                    ))}
-
-                                    {showNoteField && (
-                                      <div className="p-5 bg-white rounded-xl border-2 border-blue-300 shadow-sm">
-                                        <textarea
-                                          value={noteText}
-                                          onChange={(e) =>
-                                            setNoteText(e.target.value)
-                                          }
-                                          placeholder="Type your note here..."
-                                          className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none mb-3"
-                                          rows={3}
-                                          autoFocus
-                                        />
-                                        <div className="flex gap-2">
-                                          <button
-                                            onClick={addNote}
-                                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all"
-                                          >
-                                            ✓ Save Note
-                                          </button>
-                                          <button
-                                            onClick={() => {
-                                              setShowNoteField(false);
-                                              setNoteText("");
-                                            }}
-                                            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium transition-all"
-                                          >
-                                            Cancel
-                                          </button>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
-
-                            {!showNoteField &&
-                              selectedLead.notes.length === 0 && (
-                                <div>
-                                  <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-4">
-                                    Notes
-                                  </h3>
-                                  <button
-                                    onClick={() => setShowNoteField(true)}
-                                    className="w-full py-6 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 hover:border-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-all font-medium"
-                                  >
-                                    + Add your first note
-                                  </button>
-                                </div>
-                              )}
-
-                            {/* Email history */}
-                            {selectedLead.emailLogs.length > 0 && (
-                                <div>
-                                  <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-4">
-                                    Email History ({selectedLead.emailLogs.length})
-                                  </h3>
-                                  <div className="space-y-3">
-                                    {[...selectedLead.emailLogs]
-                                      .sort((a, b) => {
-                                        const da = a.sent_at
-                                          ? new Date(a.sent_at).getTime()
-                                          : 0;
-                                        const db = b.sent_at
-                                          ? new Date(b.sent_at).getTime()
-                                          : 0;
-                                        return db - da;
+                                <p className="text-sm text-gray-600 font-medium">
+                                  {log.direction === "outbound" ? "To:" : "From:"}{" "}
+                                  {log.direction === "outbound" ? log.to_email : log.from_email}
+                                </p>
+                                <p className="text-xs text-gray-500 mt-2">
+                                  {log.sent_at
+                                    ? new Date(log.sent_at).toLocaleString('en-US', {
+                                        month: 'short',
+                                        day: 'numeric',
+                                        year: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit'
                                       })
-                                      .map((log) => (
-                                        <div
-                                          key={log.id}
-                                          onClick={() => viewEmailContent(log)}
-                                          className="p-5 bg-white rounded-xl border-2 border-gray-200 hover:border-blue-400 hover:shadow-md transition-all cursor-pointer group"
-                                        >
-                                          <div className="flex gap-3">
-                                            <div className="text-xl mt-0.5">
-                                              {log.direction === "outbound"
-                                                ? "📤"
-                                                : "📥"}
-                                            </div>
-                                            <div className="flex-1">
-                                              <div className="flex justify-between items-start mb-2">
-                                                <div className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
-                                                  {log.subject || "(no subject)"}
-                                                </div>
-                                                <div className="text-xs text-gray-400 ml-3">
-                                                  {log.sent_at
-                                                    ? new Date(
-                                                        log.sent_at
-                                                      ).toLocaleString()
-                                                    : "—"}
-                                                </div>
-                                              </div>
-                                              <div className="flex items-center gap-2 text-xs text-gray-500">
-                                                <span>
-                                                  {log.direction === "outbound"
-                                                    ? `To: ${log.to_email}`
-                                                    : `From: ${log.from_email}`}
-                                                </span>
-                                                {log.status && (
-                                                  <>
-                                                    <span className="text-gray-300">•</span>
-                                                    <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded font-medium">
-                                                      {log.status}
-                                                    </span>
-                                                  </>
-                                                )}
-                                              </div>
-                                              <div className="mt-2 text-xs text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                Click to view full email →
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      ))}
-                                  </div>
-                                </div>
-                              )}
-                          </div>
-
-                          {/* Submission Details */}
-                          <div>
-                            <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-4">
-                              Submission Details
-                            </h3>
-                            <div className="bg-gray-50 rounded-xl border-2 border-gray-200 p-8">
-                              <div className="space-y-4">
-                                {Object.entries(selectedLead.formData).map(
-                                  ([key, value]) => (
-                                    <div
-                                      key={key}
-                                      className="flex py-4 border-b border-gray-200 last:border-0"
-                                    >
-                                      <div className="w-1/3 text-sm font-semibold text-gray-500 uppercase tracking-wider">
-                                        {key.replace(/_/g, " ")}
-                                      </div>
-                                      <div className="w-2/3 text-base text-gray-900 font-medium">
-                                        {String(value) || "—"}
-                                      </div>
-                                    </div>
-                                  )
-                                )}
+                                    : "Unknown date"}
+                                </p>
                               </div>
                             </div>
                           </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Notes Section */}
+                  <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 p-8">
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                        <span>📝</span>
+                        Notes
+                      </h3>
+                      {!showNoteField && (
+                        <button
+                          onClick={() => setShowNoteField(true)}
+                          className="px-4 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded-lg font-semibold transition-all"
+                        >
+                          + Add Note
+                        </button>
+                      )}
+                    </div>
+
+                    {showNoteField && (
+                      <div className="mb-6">
+                        <textarea
+                          value={noteText}
+                          onChange={(e) => setNoteText(e.target.value)}
+                          placeholder="Type your note here..."
+                          className="w-full border-2 border-gray-300 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                          rows={3}
+                        />
+                        <div className="flex gap-3 mt-3">
+                          <button
+                            onClick={addNote}
+                            className="px-6 py-2.5 bg-linear-to-r from-blue-600 to-purple-600 text-white rounded-xl text-sm font-semibold hover:from-blue-700 hover:to-purple-700 shadow-lg transition-all"
+                          >
+                            Save Note
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowNoteField(false);
+                              setNoteText("");
+                            }}
+                            className="px-6 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-200 transition-all"
+                          >
+                            Cancel
+                          </button>
                         </div>
                       </div>
                     )}
-                  </div>
-                )}
-              </>
-            )}
-          </>
-        ) : (
-          // SETTINGS TAB
-          <div className="space-y-8">
-            {/* System Overview */}
-            <div className="bg-white rounded-xl border-2 border-gray-200 p-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-6">
-                System Overview
-              </h2>
-              <div className="grid grid-cols-3 gap-6">
-                <div className="p-6 bg-blue-50 rounded-xl border-2 border-blue-200">
-                  <div className="text-4xl font-bold text-blue-600 mb-2">
-                    {leads.length}
-                  </div>
-                  <div className="text-sm font-semibold text-gray-600 uppercase">
-                    Active Leads
-                  </div>
-                </div>
-                <div className="p-6 bg-red-50 rounded-xl border-2 border-red-200">
-                  <div className="text-4xl font-bold text-red-600 mb-2">
-                    {deletedLeads.length}
-                  </div>
-                  <div className="text-sm font-semibold text-gray-600 uppercase">
-                    Deleted Leads
-                  </div>
-                </div>
-                <div className="p-6 bg-green-50 rounded-xl border-2 border-green-200">
-                  <div className="text-4xl font-bold text-green-600 mb-2">
-                    {leads.reduce((sum, lead) => sum + lead.notes.length, 0)}
-                  </div>
-                  <div className="text-sm font-semibold text-gray-600 uppercase">
-                    Total Notes
-                  </div>
-                </div>
-              </div>
-            </div>
 
-            {/* Deleted Leads Management */}
-            <div className="bg-white rounded-xl border-2 border-gray-200 p-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-6">
-                Deleted Leads
-              </h2>
-              {deletedLeads.length === 0 ? (
-                <div className="text-center py-12">
-                  <div className="text-4xl mb-3">✨</div>
-                  <p className="text-gray-400">No deleted leads</p>
+                    <div className="space-y-4">
+                      {selectedLead.notes.length === 0 ? (
+                        <div className="text-center py-12">
+                          <div className="w-20 h-20 mx-auto mb-4 bg-linear-to-br from-gray-100 to-blue-100 rounded-2xl flex items-center justify-center">
+                            <span className="text-4xl">📝</span>
+                          </div>
+                          <p className="text-gray-500">No notes yet. Add one to get started.</p>
+                        </div>
+                      ) : (
+                        selectedLead.notes.map((note) => (
+                          <div
+                            key={note.id}
+                            className="p-5 bg-linear-to-br from-gray-50 to-blue-50 rounded-xl border-2 border-gray-200"
+                          >
+                            {editingNoteId === note.id ? (
+                              <div>
+                                <textarea
+                                  value={editingNoteText}
+                                  onChange={(e) => setEditingNoteText(e.target.value)}
+                                  className="w-full border-2 border-gray-300 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-3"
+                                  rows={3}
+                                />
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={saveEditedNote}
+                                    className="px-4 py-2 bg-linear-to-r from-blue-600 to-purple-600 text-white rounded-lg text-sm font-semibold hover:from-blue-700 hover:to-purple-700 transition-all"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={cancelEditingNote}
+                                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-semibold hover:bg-gray-200 transition-all"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div>
+                                <p className="text-sm text-gray-900 mb-3 font-medium">
+                                  {note.note}
+                                </p>
+                                <div className="flex items-center justify-between">
+                                  <p className="text-xs text-gray-500 font-medium">
+                                    {new Date(note.created_at).toLocaleString('en-US', {
+                                      month: 'short',
+                                      day: 'numeric',
+                                      year: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </p>
+                                  <div className="flex gap-3">
+                                    <button
+                                      onClick={() => startEditingNote(note)}
+                                      className="text-xs text-blue-600 hover:text-blue-700 font-semibold"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => deleteNote(note.id)}
+                                      className="text-xs text-red-600 hover:text-red-700 font-semibold"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {deletedLeads.map((lead) => (
-                    <div
-                      key={lead.id}
-                      className="p-5 bg-gray-50 rounded-xl border border-gray-200 flex items-center justify-between"
-                    >
-                      <div className="flex-1">
-                        <h3 className="font-bold text-gray-900">
-                          {lead.name}
-                        </h3>
-                        <p className="text-sm text-gray-500">{lead.email}</p>
-                        <p className="text-xs text-gray-400 mt-1">
-                          Deleted {getTimeAgo(lead.created_at)}
-                        </p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => recoverLead(lead.id)}
-                          className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-all"
-                        >
-                          ♻️ Recover
-                        </button>
-                        <button
-                          onClick={() => permanentlyDeleteLead(lead.id)}
-                          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-all"
-                        >
-                          🗑️ Delete Forever
-                        </button>
-                      </div>
+                <div className="h-full flex items-center justify-center">
+                  <div className="text-center">
+                    <div className="w-32 h-32 mx-auto mb-6 bg-linear-to-br from-blue-100 to-purple-100 rounded-3xl flex items-center justify-center">
+                      <span className="text-6xl">👈</span>
                     </div>
-                  ))}
+                    <p className="text-gray-500 text-lg font-medium">
+                      Select a lead to view details
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
-
-            {/* Quick Actions */}
-            <div className="bg-white rounded-xl border-2 border-gray-200 p-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-6">
-                Quick Actions
-              </h2>
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  onClick={() => {
-                    fetchLeads();
-                    fetchDeletedLeads();
-                  }}
-                  className="p-6 bg-blue-50 hover:bg-blue-100 rounded-xl border-2 border-blue-200 text-left transition-all"
-                >
-                  <div className="text-2xl mb-2">🔄</div>
-                  <div className="font-bold text-gray-900">Refresh Data</div>
-                  <div className="text-sm text-gray-600 mt-1">
-                    Sync latest leads and notes
-                  </div>
-                </button>
-                
-                <button
-                  onClick={() => {
-                    const data = {
-                      leads: leads.length,
-                      deleted: deletedLeads.length,
-                      notes: leads.reduce((sum, lead) => sum + lead.notes.length, 0),
-                      exported: new Date().toISOString()
-                    };
-                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `os-stats-${Date.now()}.json`;
-                    a.click();
-                  }}
-                  className="p-6 bg-purple-50 hover:bg-purple-100 rounded-xl border-2 border-purple-200 text-left transition-all"
-                >
-                  <div className="text-2xl mb-2">📊</div>
-                  <div className="font-bold text-gray-900">Export Stats</div>
-                  <div className="text-sm text-gray-600 mt-1">
-                    Download system statistics
-                  </div>
-                </button>
-              </div>
-            </div>
           </div>
-        )}
-      </div>
+        ) : (
+          // Grid View
+          <div className="flex-1 overflow-y-auto p-8 bg-linear-to-br from-gray-50 via-white to-purple-50">
+            {/* Multi-select controls */}
+            {leads.length > 0 && (
+              <div className="mb-6 flex items-center justify-between bg-white/90 backdrop-blur-sm rounded-2xl p-5 shadow-lg border border-gray-200/50">
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={selectedLeadIds.size === leads.length && leads.length > 0}
+                    onChange={toggleSelectAllLeads}
+                    className="w-5 h-5 rounded-lg border-2 border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all cursor-pointer"
+                  />
+                  <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
+                    {selectedLeadIds.size > 0
+                      ? `${selectedLeadIds.size} selected`
+                      : "Select all"}
+                  </span>
+                </label>
+                {selectedLeadIds.size > 0 && (
+                  <button
+                    onClick={() => setShowBulkDeleteConfirm(true)}
+                    className="px-6 py-3 text-sm text-white bg-linear-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 rounded-xl font-semibold shadow-lg transition-all"
+                  >
+                    Delete Selected
+                  </button>
+                )}
+              </div>
+            )}
+
+            {leads.length === 0 ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="text-center">
+                  <div className="w-32 h-32 mx-auto mb-6 bg-linear-to-br from-blue-100 to-purple-100 rounded-3xl flex items-center justify-center">
+                    <span className="text-7xl">📭</span>
+                  </div>
+                  <h3 className="font-bold text-gray-900 mb-2 text-2xl">
+                    No inquiries yet
+                  </h3>
+                  <p className="text-gray-500 text-lg">
+                    When someone submits a form, it will appear here.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {leads.map((lead) => (
+                  <div
+                    key={lead.id}
+                    className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg border border-gray-200/50 p-6 hover:shadow-xl transition-all duration-200 group"
+                  >
+                    <div className="flex items-start justify-between mb-5">
+                      <input
+                        type="checkbox"
+                        checked={selectedLeadIds.has(lead.id)}
+                        onChange={() => toggleLeadSelection(lead.id)}
+                        className="mt-1 w-5 h-5 rounded-lg border-2 border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all cursor-pointer"
+                      />
+                      <span
+                        className={`px-4 py-1.5 text-xs font-bold rounded-full ${
+                          lead.type === "Partnership"
+                            ? "bg-linear-to-r from-purple-500 to-pink-500 text-white"
+                            : lead.type === "Consultation"
+                            ? "bg-linear-to-r from-blue-500 to-cyan-500 text-white"
+                            : "bg-linear-to-r from-green-500 to-emerald-500 text-white"
+                        }`}
+                      >
+                        {lead.type}
+                      </span>
+                    </div>
+
+                    <h3 className="font-bold text-gray-900 text-xl mb-2 group-hover:text-blue-600 transition-colors">
+                      {lead.name}
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-1 font-medium">{lead.email}</p>
+                    {lead.company && (
+                      <p className="text-sm text-gray-500 mb-4 font-medium">
+                        {lead.company}
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-2 mb-5">
+                      <span
+                        className={`px-3 py-1.5 text-xs font-bold rounded-full ${
+                          lead.status === "new"
+                            ? "bg-gray-100 text-gray-700"
+                            : lead.status === "contacted"
+                            ? "bg-blue-100 text-blue-700"
+                            : lead.status === "qualified"
+                            ? "bg-yellow-100 text-yellow-700"
+                            : "bg-green-100 text-green-700"
+                        }`}
+                      >
+                        {lead.status}
+                      </span>
+                      <span className="text-xs text-gray-500 font-semibold">
+                        Score: {lead.score}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setSelectedLead(lead);
+                        setViewMode("focus");
+                      }}
+                      className="w-full py-3 bg-linear-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white rounded-xl text-sm font-semibold transition-all shadow-lg group-hover:shadow-xl"
+                    >
+                      View Details
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      ) : (
+        // Deleted Leads Tab
+        <div className="flex-1 overflow-y-auto p-8 bg-linear-to-br from-gray-50 via-white to-purple-50">
+          <div className="max-w-7xl mx-auto">
+            <div className="mb-8">
+              <h2 className="text-3xl font-bold bg-linear-to-r from-gray-900 to-purple-700 bg-clip-text text-transparent mb-2">
+                Deleted Leads
+              </h2>
+              <p className="text-gray-600 text-lg">
+                Restore or permanently delete leads
+              </p>
+            </div>
+
+            {/* Multi-select controls */}
+            {deletedLeads.length > 0 && (
+              <div className="mb-6 flex items-center justify-between bg-white/90 backdrop-blur-sm rounded-2xl p-5 shadow-lg border border-gray-200/50">
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={selectedDeletedIds.size === deletedLeads.length && deletedLeads.length > 0}
+                    onChange={toggleSelectAllDeleted}
+                    className="w-5 h-5 rounded-lg border-2 border-gray-300 text-purple-600 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-all cursor-pointer"
+                  />
+                  <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
+                    {selectedDeletedIds.size > 0
+                      ? `${selectedDeletedIds.size} selected`
+                      : "Select all"}
+                  </span>
+                </label>
+                {selectedDeletedIds.size > 0 && (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => {
+                        const idsArray = Array.from(selectedDeletedIds);
+                        Promise.all(
+                          idsArray.map(id => 
+                            supabaseBrowser
+                              .from("inquiries")
+                              .update({ is_deleted: false })
+                              .eq("id", id)
+                          )
+                        ).then(() => {
+                          setSelectedDeletedIds(new Set());
+                          fetchLeads();
+                          fetchDeletedLeads();
+                        });
+                      }}
+                      className="px-6 py-3 text-sm text-white bg-linear-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 rounded-xl font-semibold shadow-lg transition-all"
+                    >
+                      Restore Selected
+                    </button>
+                    <button
+                      onClick={() => setShowBulkPermanentDeleteConfirm(true)}
+                      className="px-6 py-3 text-sm text-white bg-linear-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 rounded-xl font-semibold shadow-lg transition-all"
+                    >
+                      Permanently Delete Selected
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {deletedLeads.length === 0 ? (
+              <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 p-16 text-center">
+                <div className="w-32 h-32 mx-auto mb-6 bg-linear-to-br from-green-100 to-emerald-100 rounded-3xl flex items-center justify-center">
+                  <span className="text-7xl">✨</span>
+                </div>
+                <h3 className="font-bold text-gray-900 mb-2 text-2xl">
+                  No deleted leads
+                </h3>
+                <p className="text-gray-500 text-lg">
+                  Deleted leads will appear here
+                </p>
+              </div>
+            ) : (
+              <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-linear-to-r from-gray-50 to-purple-50 border-b-2 border-gray-200">
+                      <tr>
+                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
+                          <input
+                            type="checkbox"
+                            checked={selectedDeletedIds.size === deletedLeads.length}
+                            onChange={toggleSelectAllDeleted}
+                            className="w-5 h-5 rounded-lg border-2 border-gray-300 text-purple-600 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-all cursor-pointer"
+                          />
+                        </th>
+                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
+                          Name
+                        </th>
+                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
+                          Email
+                        </th>
+                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
+                          Type
+                        </th>
+                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
+                          Company
+                        </th>
+                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {deletedLeads.map((lead) => (
+                        <tr key={lead.id} className="hover:bg-purple-50/50 transition-colors">
+                          <td className="px-6 py-5 whitespace-nowrap">
+                            <input
+                              type="checkbox"
+                              checked={selectedDeletedIds.has(lead.id)}
+                              onChange={() => toggleDeletedSelection(lead.id)}
+                              className="w-5 h-5 rounded-lg border-2 border-gray-300 text-purple-600 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-all cursor-pointer"
+                            />
+                          </td>
+                          <td className="px-6 py-5 whitespace-nowrap">
+                            <div className="text-sm font-bold text-gray-900">
+                              {lead.name}
+                            </div>
+                          </td>
+                          <td className="px-6 py-5 whitespace-nowrap">
+                            <div className="text-sm text-gray-600 font-medium">
+                              {lead.email}
+                            </div>
+                          </td>
+                          <td className="px-6 py-5 whitespace-nowrap">
+                            <span
+                              className={`px-3 py-1.5 text-xs font-bold rounded-full ${
+                                lead.type === "Partnership"
+                                  ? "bg-linear-to-r from-purple-500 to-pink-500 text-white"
+                                  : lead.type === "Consultation"
+                                  ? "bg-linear-to-r from-blue-500 to-cyan-500 text-white"
+                                  : "bg-linear-to-r from-green-500 to-emerald-500 text-white"
+                              }`}
+                            >
+                              {lead.type}
+                            </span>
+                          </td>
+                          <td className="px-6 py-5 whitespace-nowrap">
+                            <div className="text-sm text-gray-600 font-medium">
+                              {lead.company || "—"}
+                            </div>
+                          </td>
+                          <td className="px-6 py-5 whitespace-nowrap">
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => restoreLead(lead.id)}
+                                className="px-4 py-2 text-sm text-green-600 hover:bg-green-50 rounded-lg font-semibold transition-all"
+                              >
+                                Restore
+                              </button>
+                              <button
+                                onClick={() => permanentlyDeleteLead(lead.id)}
+                                className="px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg font-semibold transition-all"
+                              >
+                                Delete Forever
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Email Modal */}
       {isEmailModalOpen && selectedLead && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 space-y-4">
-            <h3 className="text-lg font-semibold">
-              Email {selectedLead.email}
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8">
+            <h3 className="text-2xl font-bold mb-6 bg-linear-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+              Send Email to {selectedLead.name}
             </h3>
 
             <input
               type="text"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full border-2 border-gray-300 rounded-xl px-4 py-3 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
               placeholder="Subject"
               value={emailSubject}
               onChange={(e) => setEmailSubject(e.target.value)}
             />
 
             <textarea
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm h-40 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full border-2 border-gray-300 rounded-xl px-4 py-3 text-sm h-40 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
               placeholder="Message"
               value={emailBody}
               onChange={(e) => setEmailBody(e.target.value)}
             />
 
-            <div className="flex justify-end gap-2">
+            <div className="flex justify-end gap-3 mt-6">
               <button
-                className="px-4 py-2 text-sm rounded-lg bg-gray-100 hover:bg-gray-200"
+                className="px-6 py-3 text-sm rounded-xl bg-gray-100 hover:bg-gray-200 font-semibold transition-all"
                 onClick={() => {
                   if (isSendingEmail) return;
                   setIsEmailModalOpen(false);
@@ -1233,7 +1420,7 @@ export default function InquiriesPage() {
               </button>
 
               <button
-                className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                className="px-6 py-3 text-sm rounded-xl bg-linear-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700 font-semibold disabled:opacity-50 shadow-lg transition-all"
                 disabled={isSendingEmail}
                 onClick={async () => {
                   if (!selectedLead) return;
@@ -1298,46 +1485,50 @@ export default function InquiriesPage() {
 
       {/* Email Viewer Modal */}
       {viewingEmail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
             {/* Header */}
-            <div className="p-6 border-b-2 border-gray-200">
+            <div className="p-8 border-b-2 border-gray-200">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="text-2xl">
+                  <div className="flex items-center gap-3 mb-3">
+                    <span className="text-3xl">
                       {viewingEmail.direction === "outbound" ? "📤" : "📥"}
                     </span>
                     <h2 className="text-2xl font-bold text-gray-900">
                       {viewingEmail.subject || "(no subject)"}
                     </h2>
                   </div>
-                  <div className="space-y-1 text-sm text-gray-600">
-                    <div>
-                      <span className="font-semibold">
+                  <div className="space-y-2 text-sm text-gray-600">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold">
                         {viewingEmail.direction === "outbound" ? "To:" : "From:"}
-                      </span>{" "}
-                      {viewingEmail.direction === "outbound"
-                        ? viewingEmail.to_email
-                        : viewingEmail.from_email}
+                      </span>
+                      <span className="font-medium">
+                        {viewingEmail.direction === "outbound"
+                          ? viewingEmail.to_email
+                          : viewingEmail.from_email}
+                      </span>
                     </div>
-                    <div>
-                      <span className="font-semibold">Date:</span>{" "}
-                      {viewingEmail.sent_at
-                        ? new Date(viewingEmail.sent_at).toLocaleString("en-US", {
-                            weekday: "short",
-                            year: "numeric",
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "Unknown"}
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold">Date:</span>
+                      <span className="font-medium">
+                        {viewingEmail.sent_at
+                          ? new Date(viewingEmail.sent_at).toLocaleString("en-US", {
+                              weekday: "short",
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })
+                          : "Unknown"}
+                      </span>
                     </div>
                     {viewingEmail.status && (
-                      <div>
-                        <span className="font-semibold">Status:</span>{" "}
-                        <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold">Status:</span>
+                        <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold">
                           {viewingEmail.status}
                         </span>
                       </div>
@@ -1349,7 +1540,7 @@ export default function InquiriesPage() {
                     setViewingEmail(null);
                     setEmailContent("");
                   }}
-                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  className="p-3 hover:bg-gray-100 rounded-xl transition-all"
                 >
                   <svg
                     className="w-6 h-6 text-gray-500"
@@ -1369,16 +1560,16 @@ export default function InquiriesPage() {
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+            <div className="flex-1 overflow-y-auto p-8 bg-linear-to-br from-gray-50 to-blue-50">
               {loadingEmailContent ? (
                 <div className="flex items-center justify-center h-64">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                    <div className="text-gray-500 font-medium">Loading email content...</div>
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                    <div className="text-gray-500 font-semibold">Loading email content...</div>
                   </div>
                 </div>
               ) : (
-                <div className="bg-white rounded-lg p-6 shadow-sm">
+                <div className="bg-white rounded-2xl p-8 shadow-lg">
                   <div
                     className="prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-a:text-blue-600"
                     dangerouslySetInnerHTML={{ __html: emailContent }}
@@ -1388,13 +1579,13 @@ export default function InquiriesPage() {
             </div>
 
             {/* Footer */}
-            <div className="p-6 border-t-2 border-gray-200 bg-gray-50">
+            <div className="p-8 border-t-2 border-gray-200 bg-gray-50">
               <button
                 onClick={() => {
                   setViewingEmail(null);
                   setEmailContent("");
                 }}
-                className="px-6 py-2.5 bg-gray-900 hover:bg-gray-800 text-white rounded-lg font-medium transition-all"
+                className="px-8 py-3 bg-linear-to-r from-gray-900 to-gray-800 hover:from-gray-800 hover:to-gray-700 text-white rounded-xl font-semibold transition-all shadow-lg"
               >
                 Close
               </button>
@@ -1403,25 +1594,78 @@ export default function InquiriesPage() {
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
+      {/* Single Delete Confirmation Modal */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 max-w-md">
-            <h3 className="text-lg font-semibold mb-2">Delete Lead?</h3>
-            <p className="text-gray-600 mb-6">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl p-8 max-w-md shadow-2xl">
+            <h3 className="text-xl font-bold mb-3 text-gray-900">Delete Lead?</h3>
+            <p className="text-gray-600 mb-8">
               Are you sure you want to delete {selectedLead?.name}? You&apos;ll
-              be able to recover this lead later from Settings.
+              be able to recover this lead later from Deleted Leads.
             </p>
             <div className="flex gap-3">
               <button
                 onClick={deleteLead}
-                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium"
+                className="flex-1 py-3 bg-linear-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 text-white rounded-xl font-semibold shadow-lg transition-all"
               >
                 Delete Lead
               </button>
               <button
                 onClick={() => setShowDeleteConfirm(false)}
-                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium"
+                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-semibold transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Confirmation Modal */}
+      {showBulkDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl p-8 max-w-md shadow-2xl">
+            <h3 className="text-xl font-bold mb-3 text-gray-900">Delete Multiple Leads?</h3>
+            <p className="text-gray-600 mb-8">
+              Are you sure you want to delete {selectedLeadIds.size} lead{selectedLeadIds.size > 1 ? 's' : ''}? You&apos;ll
+              be able to recover these leads later from Deleted Leads.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={bulkDeleteLeads}
+                className="flex-1 py-3 bg-linear-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 text-white rounded-xl font-semibold shadow-lg transition-all"
+              >
+                Delete {selectedLeadIds.size} Lead{selectedLeadIds.size > 1 ? 's' : ''}
+              </button>
+              <button
+                onClick={() => setShowBulkDeleteConfirm(false)}
+                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-semibold transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Permanent Delete Confirmation Modal */}
+      {showBulkPermanentDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl p-8 max-w-md shadow-2xl">
+            <h3 className="text-xl font-bold mb-3 text-red-600">Permanently Delete Leads?</h3>
+            <p className="text-gray-600 mb-8">
+              Are you sure you want to permanently delete {selectedDeletedIds.size} lead{selectedDeletedIds.size > 1 ? 's' : ''}? This action cannot be undone!
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={bulkPermanentlyDeleteLeads}
+                className="flex-1 py-3 bg-linear-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 text-white rounded-xl font-semibold shadow-lg transition-all"
+              >
+                Permanently Delete
+              </button>
+              <button
+                onClick={() => setShowBulkPermanentDeleteConfirm(false)}
+                className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-semibold transition-all"
               >
                 Cancel
               </button>
