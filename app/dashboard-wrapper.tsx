@@ -35,6 +35,13 @@ export default function DashboardLayout({
       icon: "📈",
       description: "Performance metrics"
     },
+    { 
+      name: "Email Bots",
+      href: "/email-bots",
+      icon: "🤖",
+      description: "Auto-reply templates"
+    },
+  
   ];
 
   return (
