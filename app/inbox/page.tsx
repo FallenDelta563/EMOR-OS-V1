@@ -1433,6 +1433,7 @@ export default function InboxPage() {
   // Email modal state
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [emailModalData, setEmailModalData] = useState<any>(null);
+  const [currentEmailData, setCurrentEmailData] = useState<any>(null);
 
   const toast = useCallback((t: Omit<Toast, "id">) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1452,6 +1453,7 @@ export default function InboxPage() {
       firstName: typeof name === 'string' ? name.split(' ')[0] : 'there',
       email: email ? String(email) : '',
       company: normalizeCompany(form),
+      businessName: normalizeCompany(form) || 'your business',
       phone: normalizePhone(form) ? String(normalizePhone(form)) : undefined,
       message: normalizeMessage(form),
       services: normalizeServices(form),
@@ -2024,14 +2026,30 @@ export default function InboxPage() {
                   }}
                   onOpenEmailModal={(inquiry) => {
                     const emailData = prepareInquiryEmailData(inquiry);
-                    const suggestedTemplate = suggestTemplate('inquiry', emailData);
-                    const generated = generateEmailFromTemplate(suggestedTemplate, emailData);
+                    setCurrentEmailData(emailData);
+                    
+                    // Simple inquiry response - manually crafted
+                    const firstName = emailData.firstName || 'there';
+                    const subject = `Re: Your inquiry`;
+                    const body = `Hi ${firstName},
+
+Thanks for reaching out${emailData.company ? ` about ${emailData.company}` : ''}.
+
+${emailData.message ? `You mentioned: "${emailData.message.substring(0, 150)}${emailData.message.length > 150 ? '...' : ''}"\n\n` : ''}I'd love to understand what you're looking to improve — whether it's lead handling, follow-up, visibility, or something else.
+
+If you're open to it, a quick 10-15 minute call would help me figure out if we're a good fit and what I'd recommend first.
+
+Does sometime this week work?
+
+Best,
+Oswaldo
+EMOR AI`;
                     
                     setEmailModalData({
                       to: emailData.email,
                       toName: emailData.name,
-                      subject: generated.subject,
-                      body: generated.body,
+                      subject: subject,
+                      body: body,
                       itemType: 'inquiry' as const,
                       itemId: inquiry.id,
                     });
@@ -2043,8 +2061,13 @@ export default function InboxPage() {
                   item={selectedItem}
                   onOpenEmailModal={(prospect) => {
                     const emailData = prepareProspectEmailData(prospect);
+                    setCurrentEmailData(emailData);
                     const suggestedTemplate = suggestTemplate('prospect', emailData);
-                    const generated = generateEmailFromTemplate(suggestedTemplate, emailData);
+                    const generated = generateEmailFromTemplate(suggestedTemplate, emailData, {
+                      style: 'default',
+                      senderName: 'Oswaldo',
+                      toName: prospect.name
+                    });
                     
                     setEmailModalData({
                       to: '', // Prospects don't have email in current schema
@@ -2097,14 +2120,30 @@ export default function InboxPage() {
                 }}
                 onOpenEmailModal={(inquiry) => {
                   const emailData = prepareInquiryEmailData(inquiry);
-                  const suggestedTemplate = suggestTemplate('inquiry', emailData);
-                  const generated = generateEmailFromTemplate(suggestedTemplate, emailData);
+                  setCurrentEmailData(emailData);
+                  
+                  // Simple inquiry response - manually crafted
+                  const firstName = emailData.firstName || 'there';
+                  const subject = `Re: Your inquiry`;
+                  const body = `Hi ${firstName},
+
+Thanks for reaching out${emailData.company ? ` about ${emailData.company}` : ''}.
+
+${emailData.message ? `You mentioned: "${emailData.message.substring(0, 150)}${emailData.message.length > 150 ? '...' : ''}"\n\n` : ''}I'd love to understand what you're looking to improve — whether it's lead handling, follow-up, visibility, or something else.
+
+If you're open to it, a quick 10-15 minute call would help me figure out if we're a good fit and what I'd recommend first.
+
+Does sometime this week work?
+
+Best,
+Oswaldo
+EMOR AI`;
                   
                   setEmailModalData({
                     to: emailData.email,
                     toName: emailData.name,
-                    subject: generated.subject,
-                    body: generated.body,
+                    subject: subject,
+                    body: body,
                     itemType: 'inquiry' as const,
                     itemId: inquiry.id,
                   });
@@ -2116,8 +2155,13 @@ export default function InboxPage() {
                 item={selectedItem}
                 onOpenEmailModal={(prospect) => {
                   const emailData = prepareProspectEmailData(prospect);
+                  setCurrentEmailData(emailData);
                   const suggestedTemplate = suggestTemplate('prospect', emailData);
-                  const generated = generateEmailFromTemplate(suggestedTemplate, emailData);
+                  const generated = generateEmailFromTemplate(suggestedTemplate, emailData, { 
+                    style: 'default',
+                    senderName: 'Oswaldo',
+                    toName: prospect.name 
+                  });
                   
                   setEmailModalData({
                     to: '',
@@ -2142,6 +2186,7 @@ export default function InboxPage() {
           onClose={() => {
             setEmailModalOpen(false);
             setEmailModalData(null);
+            setCurrentEmailData(null);
           }}
           emailData={emailModalData}
           onSend={async (finalEmail) => {
@@ -2154,6 +2199,8 @@ export default function InboxPage() {
                   to: emailModalData.to,
                   subject: finalEmail.subject,
                   message: finalEmail.body,
+                  emailAccount: finalEmail.selectedEmailAccount,
+                  template: finalEmail.selectedTemplate,
                   inquiryId: emailModalData.itemType === 'inquiry' ? emailModalData.itemId : undefined,
                 }),
               });
@@ -2167,6 +2214,7 @@ export default function InboxPage() {
               toast({ title: 'Email sent successfully!', kind: 'success' });
               setEmailModalOpen(false);
               setEmailModalData(null);
+              setCurrentEmailData(null);
               loadAll('Email sent');
             } catch (error: any) {
               // Don't close modal on error so user can try again

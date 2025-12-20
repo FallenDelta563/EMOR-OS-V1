@@ -13,16 +13,45 @@ type EmailModalProps = {
     body: string;
     itemType: "inquiry" | "prospect";
     itemId: string;
+    availableTemplates?: Array<{ id: string; label: string }>;
   };
-  onSend: (customizedEmail: { subject: string; body: string }) => Promise<void>;
+  onSend: (customizedEmail: { 
+    subject: string; 
+    body: string; 
+    selectedEmailAccount: string;
+    selectedTemplate: string;
+  }) => Promise<void>;
+  onTemplateChange?: (templateId: string) => { subject: string; body: string };
 };
 
-export function EmailModal({ isOpen, onClose, emailData, onSend }: EmailModalProps) {
+export function EmailModal({ isOpen, onClose, emailData, onSend, onTemplateChange }: EmailModalProps) {
   const [subject, setSubject] = useState(emailData?.subject || '');
   const [body, setBody] = useState(emailData?.body || '');
+  const [selectedEmailAccount, setSelectedEmailAccount] = useState<string>('1');
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('selective');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Email account options - you can move this to a config file or fetch from API
+  const emailAccounts = [
+    { id: '1', label: 'Inquiries', email: 'inquiries@emorai.com' },
+    { id: '2', label: 'OZ', email: 'oswaldoo@emorai.com' },
+  ];
+
+  // Templates based on actual email system
+  const defaultTemplates = emailData?.itemType === 'prospect' 
+    ? [
+        { id: 'selective', label: 'Style 1 — Selective (trust-first)' },
+        { id: 'intro', label: 'Style 5 — Intro (site mention)' },
+      ]
+    : [
+        { id: 'initial_response', label: 'Initial Response' },
+        { id: 'follow_up', label: 'Follow Up' },
+        { id: 'thank_you', label: 'Thank You' },
+      ];
+
+  const availableTemplates = emailData?.availableTemplates || defaultTemplates;
 
   // Update state when emailData changes
   React.useEffect(() => {
@@ -31,8 +60,20 @@ export function EmailModal({ isOpen, onClose, emailData, onSend }: EmailModalPro
       setBody(emailData.body);
       setError(null);
       setSent(false);
+      setSelectedEmailAccount('1'); // Reset to inquiries when new email opens
+      setSelectedTemplate(emailData.itemType === 'prospect' ? 'selective' : 'initial_response');
     }
   }, [emailData]);
+
+  // Handle template change
+  const handleTemplateChange = (templateId: string) => {
+    setSelectedTemplate(templateId);
+    if (onTemplateChange) {
+      const result = onTemplateChange(templateId);
+      setSubject(result.subject);
+      setBody(result.body);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -41,7 +82,7 @@ export function EmailModal({ isOpen, onClose, emailData, onSend }: EmailModalPro
     setError(null);
     
     try {
-      await onSend({ subject, body });
+      await onSend({ subject, body, selectedEmailAccount, selectedTemplate });
       setSent(true);
       setTimeout(() => {
         onClose();
@@ -67,24 +108,46 @@ export function EmailModal({ isOpen, onClose, emailData, onSend }: EmailModalPro
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white/95 backdrop-blur-sm px-6 py-4">
-          <div>
+        <div className="sticky top-0 z-10 border-b border-gray-200 bg-white/95 backdrop-blur-sm px-6 py-4">
+          <div className="flex items-center justify-between mb-3">
             <h2 className="text-xl font-semibold text-gray-900">
               {sent ? "Email Sent! ✓" : "Review & Send Email"}
             </h2>
-            <p className="mt-1 text-sm text-gray-600">
+            <button
+              onClick={onClose}
+              className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+              disabled={sending}
+            >
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+          
+          <div className="space-y-2">
+            <p className="text-sm text-gray-600">
               To: <strong>{emailData.toName}</strong> ({emailData.to})
             </p>
+            
+            {/* Email Account Selector */}
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
+                Send from:
+              </label>
+              <select
+                value={selectedEmailAccount}
+                onChange={(e) => setSelectedEmailAccount(e.target.value)}
+                className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
+                disabled={sending || sent}
+              >
+                {emailAccounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.label} ({account.email})
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors"
-            disabled={sending}
-          >
-            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
-            </svg>
-          </button>
         </div>
 
         {/* Body */}
@@ -140,6 +203,9 @@ export function EmailModal({ isOpen, onClose, emailData, onSend }: EmailModalPro
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
             <h3 className="text-sm font-medium text-gray-700 mb-3">Preview</h3>
             <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-2">
+              <div className="text-xs text-gray-500">
+                <strong>From:</strong> {emailAccounts.find(acc => acc.id === selectedEmailAccount)?.email}
+              </div>
               <div className="text-xs text-gray-500">
                 <strong>To:</strong> {emailData.to}
               </div>
